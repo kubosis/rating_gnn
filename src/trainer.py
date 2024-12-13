@@ -2,17 +2,15 @@ from typing import Optional, Sequence
 
 import torch
 import torch.nn.functional as F
-from sqlalchemy.dialects.postgresql import array
 from torch import Tensor
 import torch.nn as nn
+from torch.nn import CrossEntropyLoss
 from torch_geometric_temporal.signal import (
     temporal_signal_split,
     DynamicGraphTemporalSignal,
 )
 import numpy as np
 from loguru import logger
-
-from models.loss import WeightedMSELoss
 
 
 class Trainer:
@@ -26,7 +24,7 @@ class Trainer:
             model: Optional[nn.Module] = None,
             lr: float = 0.001,
             lr_rating: float = 3.0,
-            loss_fn=WeightedMSELoss(),
+            loss_fn=CrossEntropyLoss(),
             train_ratio: float = 0.8,
             optim=torch.optim.Adam,
             **kwargs,
@@ -275,15 +273,8 @@ class Trainer:
 
         return [np.array(training_accuracy), np.array(validation_accuracy)]
 
-    def _loss_fn(self, y, y_hat, weight=None):
-        if isinstance(self.loss_fn, WeightedMSELoss):
-            assert weight is not None
-            return self.loss_fn(y_hat, y, weight)
-        else:
-            return self.loss_fn(y_hat, y)
-
     def _create_edge_index_and_weight(
-            self, match, y, validation: bool = False, bidir: bool = True
+            self, match, y, validation: bool = False, bidir: bool = True, initial_weight: float = 0.1
     ) -> tuple[Tensor, Optional[Tensor]]:
         assert len(y) in [
             2,
@@ -293,6 +284,32 @@ class Trainer:
         outcome = torch.argmax(y).item()
         match = match.unsqueeze(1)
         weight = None
+
+        _edge_weight_map = {
+            True: { # length of one-hot encoded result == 2
+                0: { # Home win == True
+                    True: torch.tensor([+1, -1], dtype=torch.float),  # bidirectional edges == True
+                    False: torch.tensor([1.0], dtype=torch.float),    # bidirectional edges == False
+                },
+                1: { # Home win == False
+                    True: torch.tensor([-1, +1], dtype=torch.float),  # bidirectional edges == True
+                    False: torch.tensor([1.0], dtype=torch.float),    # bidirectional edges == False
+                }
+            },
+            False: { # length of one-hot encoded result != 2
+                0: { # Home win
+                    True: torch.tensor([+1, -1], dtype=torch.float),
+                    False: torch.tensor([+1, -1], dtype=torch.float),
+                },
+                1: { # draw
+
+                },
+                2: { # away win
+
+                }
+            }
+        }
+
         if len(y) == 2:
             # draws not used -> bidirectional edges possible
             if outcome == 0:
@@ -329,21 +346,11 @@ class Trainer:
         if validation:
             weight = None
         else:
-            weight *= 0.1
+            weight *= initial_weight
             weight = weight.to(self.device)
 
         index = index.to(self.device)
         return index, weight
-
-    def _step(self):
-        for p in self.model.lin.parameters():
-            p.data.add_(p.grad.data, alpha=-self._lr)
-        for p in self.model.rnn_gconv.parameters():
-            p.data.add_(p.grad.data, alpha=-self._lr)
-
-        self.model.embedding.data.add_(
-            self.model.embedding.grad.data, alpha=-self._lr_rating
-        )
 
     def _train_gnn(
             self,
@@ -421,7 +428,6 @@ class Trainer:
             if clip_grad:
                 torch.nn.utils.clip_grad_norm_(self.model.hyperparams, max_norm=1)
             self.optim.step()
-            # self._step()
 
         return accuracy, loss_acc
 
@@ -446,105 +452,6 @@ class Trainer:
             ...
         else:
             raise RuntimeError("Unknown rating model type")
-
-    def _train_elo(
-            self, matches, outcomes, match_points, validation, clip_grad, predictions=None, **kwargs
-    ) -> tuple[int, float]:
-        if validation:
-            self.model.eval()
-        else:
-            self.model.train()
-
-        if not self.model.is_manual:
-            self.optim.zero_grad()
-
-        accuracy, loss_acc = 0, 0
-        for m in range(matches.shape[1]):
-            match = matches[:, m]
-
-            y_hat = self.model(match)
-            y = outcomes[m, :]  # edge weight encodes the match outcome
-            if not self.model.is_manual:
-                y.requires_grad = True
-
-            target = torch.argmax(y)
-            target = target.detach()
-            prediction = y_hat
-            if predictions is not None:
-                predictions.append(float(prediction))
-
-            accuracy += 1 if abs(target - prediction) < 0.5 else 0
-
-            home_pts, away_pts = match_points[m, 0], match_points[m, 1]
-            point_diff = torch.abs(home_pts - away_pts)
-
-            gamma = self.model.gamma if hasattr(self.model, "gamma") else 1
-            loss = self._loss_fn(y, y_hat, (point_diff + 1) ** gamma)
-            loss_acc += loss.item()
-
-            if validation:
-                continue
-
-            if self.model.is_manual:
-                self.model.backward([home_pts, away_pts])
-            else:
-                loss.backward()
-                if clip_grad:
-                    torch.nn.utils.clip_grad_norm_(self.model.hyperparams, max_norm=1)
-                self.optim.step()
-
-        return accuracy, loss_acc
-
-    def _train_berrar(
-            self,
-            matches,
-            outcomes,
-            match_points,
-            validation: bool = False,
-            clip_grad: bool = False,
-            **kwargs,
-    ) -> tuple[int, float]:
-        if validation:
-            self.model.eval()
-        else:
-            self.model.train()
-
-        if not self.model.is_manual:
-            self.optim.zero_grad()
-
-        accuracy, loss_acc = 0, 0
-        for m in range(matches.shape[1]):
-            match = matches[:, m]
-
-            y_hat = self.model(match)
-            outcome = outcomes[m, :]  # edge weight encodes the match outcome
-
-            target = torch.argmax(outcome) / 2.0
-            target = target.detach()
-
-            prediction = 1 if y_hat[0] > y_hat[1] else 0 if y_hat[0] < y_hat[1] else 0.5
-
-            accuracy += 1 if abs(target - prediction) < 0.5 else 0
-
-            y = match_points[m, :].type(torch.float64).view(-1, 1)
-            if not self.model.is_manual:
-                y.requires_grad = True
-
-            if validation:
-                continue
-
-            if self.model.is_manual:
-                home_pts, away_pts = match_points[m, 0], match_points[m, 1]
-                self.model.backward([home_pts, away_pts])
-            else:
-                loss = self._loss_fn(y, y_hat)
-                loss_acc += loss.item()
-                loss.backward()
-                if clip_grad:
-                    torch.nn.utils.clip_grad_norm_(self.model.hyperparams, max_norm=1)
-                self.optim.step()
-
-        return accuracy, loss_acc
 
     def test(self, verbose: bool = False) -> float:
         self.model.eval()
