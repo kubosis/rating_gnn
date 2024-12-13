@@ -41,10 +41,16 @@ def ssh_tunnel(fun):
             ["ssh_host", "ssh_user", "ssh_pkey"], **kwargs
         )
 
-        local_port: int = kwargs.pop("local_port") if "local_port" in kwargs else 5432
-        remote_port: int = kwargs.pop("remote_port") if "remote_port" in kwargs else 22
+        local_port: int = (
+            kwargs.pop("local_port") if "local_port" in kwargs else 5432
+        )
+        remote_port: int = (
+            kwargs.pop("remote_port") if "remote_port" in kwargs else 22
+        )
         local_address: str = (
-            kwargs.pop("local_address") if "local_address" in kwargs else "127.0.0.1"
+            kwargs.pop("local_address")
+            if "local_address" in kwargs
+            else "127.0.0.1"
         )
 
         logger.info(

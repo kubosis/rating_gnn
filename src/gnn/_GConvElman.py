@@ -24,6 +24,7 @@ class GConvElman(torch.nn.Module):
         bias (bool, optional): If set to :obj:`False`, the layer will not learn
             an additive bias. (default: :obj:`True`)
     """
+
     _gconv = {
         "SAGEConv": SAGEConv,
         "GCNConv": GCNConv,
@@ -104,7 +105,9 @@ class GConvElman(torch.nn.Module):
 
     def _set_hidden_state(self, X):
         if self.H is None:
-            return torch.zeros(X.shape[0], self.out_channels).to(X.device).float()
+            return (
+                torch.zeros(X.shape[0], self.out_channels).to(X.device).float()
+            )
         return self.H
 
     def _calculate_ht(self, X, edge_index, edge_weight, H):

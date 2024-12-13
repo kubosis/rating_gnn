@@ -32,31 +32,33 @@ class RatingRGNN(RecurrentGNN):
     }
 
     def __init__(
-            self,
-            team_count: int,
-            embed_dim: int,
-            target_dim: int,
-            discount: float = 0.8,
-            correction: bool = False,
-            activation: str = "relu",
-            K: int = 2,
-            rgnn_conv: str = "GCONV_GRU",
-            graph_conv: str = "GCNConv",
-            rating: str = None,
-            normalization: Optional[str] = "sym",
-            aggr: str = "add",
-            dense_layers: int = 1,
-            conv_layers: int = 1,
-            dropout_rate: float = 0.1,
-            debug=False,
-            **rating_kwargs
+        self,
+        team_count: int,
+        embed_dim: int,
+        target_dim: int,
+        discount: float = 0.8,
+        correction: bool = False,
+        activation: str = "relu",
+        K: int = 2,
+        rgnn_conv: str = "GCONV_GRU",
+        graph_conv: str = "GCNConv",
+        rating: str = None,
+        normalization: Optional[str] = "sym",
+        aggr: str = "add",
+        dense_layers: int = 1,
+        conv_layers: int = 1,
+        dropout_rate: float = 0.1,
+        debug=False,
+        **rating_kwargs
     ):
 
         assert rgnn_conv.upper() in ["GCONV_GRU", "GCONV_ELMAN"]
         assert graph_conv in ["GraphConv", "GCNConv", "ChebConv"]
         assert rating in ["elo", "berrar", "pi", None]
 
-        assert embed_dim % 2 == 0 or rating == "elo"  # since berrar and pi needs 2*n values for each team
+        assert (
+            embed_dim % 2 == 0 or rating == "elo"
+        )  # since berrar and pi needs 2*n values for each team
         assert conv_layers > 0 and dense_layers >= 0
 
         super(RatingRGNN, self).__init__(discount, debug, correction)
@@ -104,14 +106,20 @@ class RatingRGNN(RecurrentGNN):
     def _resolve_rating(self, rating: Optional[str], **rating_kwargs):
         in_channels = self.rating_dim
         if rating is not None:
-            rtg = self._rating[rating](in_channels=in_channels, **rating_kwargs)
+            rtg = self._rating[rating](
+                in_channels=in_channels, **rating_kwargs
+            )
         else:
             rtg = None
         return rtg
 
     def _create_linear_layers(self):
         sequence = []
-        in_channels = 2 * self.rating_dim if self.rating_str in ["elo", None] else self.rating_dim
+        in_channels = (
+            2 * self.rating_dim
+            if self.rating_str in ["elo", None]
+            else self.rating_dim
+        )
         if self.dense_layers > 0:
             sequence.append(nn.Linear(in_channels, self.rating_dim))
             for i in range(1, self.dense_layers):
@@ -124,22 +132,44 @@ class RatingRGNN(RecurrentGNN):
         self.linear_layers = sequence
 
     def _create_rgnn_layers(
-            self, rgnn_conv: str, K: int, normalization: str, gconv: str
+        self, rgnn_conv: str, K: int, normalization: str, gconv: str
     ):
         sequence = []
         if rgnn_conv.upper() == "GCONV_GRU":
-            m = GConvGRU(self.embed_dim, self.rating_dim, K, normalization=normalization)
+            m = GConvGRU(
+                self.embed_dim, self.rating_dim, K, normalization=normalization
+            )
             m.to(self.device)
             sequence.append(m)
             for i in range(1, self.conv_layers):
-                m = GConvGRU(self.rating_dim, self.rating_dim, K, normalization=normalization)
+                m = GConvGRU(
+                    self.rating_dim,
+                    self.rating_dim,
+                    K,
+                    normalization=normalization,
+                )
                 m.to(self.device)
                 sequence.append(m)
         elif rgnn_conv.upper() == "GCONV_ELMAN":
-            sequence.append(GConvElman(self.embed_dim, self.rating_dim, gconv, K=self.K, normalization=normalization))
+            sequence.append(
+                GConvElman(
+                    self.embed_dim,
+                    self.rating_dim,
+                    gconv,
+                    K=self.K,
+                    normalization=normalization,
+                )
+            )
             for i in range(1, self.conv_layers):
                 sequence.append(
-                    GConvElman(self.rating_dim, self.rating_dim, gconv, K=self.K, normalization=normalization))
+                    GConvElman(
+                        self.rating_dim,
+                        self.rating_dim,
+                        gconv,
+                        K=self.K,
+                        normalization=normalization,
+                    )
+                )
         elif rgnn_conv.upper() == "PEREVERZEVA_RGNN":
             params = self._get_gconv_params(gconv)
             model = self._gconv[gconv]
@@ -164,7 +194,15 @@ class RatingRGNN(RecurrentGNN):
             _model_params["K"] = self.K
         return _model_params
 
-    def forward(self, edge_index, home, away, edge_weight=None, home_goals=None, away_goals=None):
+    def forward(
+        self,
+        edge_index,
+        home,
+        away,
+        edge_weight=None,
+        home_goals=None,
+        away_goals=None,
+    ):
         # get teams embedding
         h = torch.tensor(list(range(self.team_count))).to(self.device)
         h = self.embedding(h).reshape(-1, self.embed_dim)

@@ -23,7 +23,9 @@ class RecurrentGNN(nn.Module):
         self.debug = debug
         self.embedding_progression = []
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self.store = True  # true on training, false on validation
         self.last_match_training = False
 
@@ -37,9 +39,15 @@ class RecurrentGNN(nn.Module):
             self.embedding_progression.append(h.detach().clone().numpy())
 
         if edge_weight is None:
-            new_edge_weight = torch.ones_like(edge_index[0, :]).detach().to(self.device, dtype=torch.float)
+            new_edge_weight = (
+                torch.ones_like(edge_index[0, :])
+                .detach()
+                .to(self.device, dtype=torch.float)
+            )
         else:
-            new_edge_weight = edge_weight.detach().clone().to(self.device, dtype=torch.float)
+            new_edge_weight = (
+                edge_weight.detach().clone().to(self.device, dtype=torch.float)
+            )
         if self.H_edge_weight is None:
             self.H_edge_weight = new_edge_weight
         else:
@@ -47,13 +55,17 @@ class RecurrentGNN(nn.Module):
             # weight correction
             if self.correction:
                 self.H_edge_weight[-2:] = torch.abs(self.H_edge_weight[-2:])
-            self.H_edge_weight = torch.cat([self.H_edge_weight, new_edge_weight]).to(self.device, dtype=torch.float)
+            self.H_edge_weight = torch.cat(
+                [self.H_edge_weight, new_edge_weight]
+            ).to(self.device, dtype=torch.float)
 
         new_edge_index = edge_index.detach().clone().to(self.device)
         if self.H_edge_index is None:
             self.H_edge_index = new_edge_index
         else:
-            self.H_edge_index = torch.cat([self.H_edge_index, new_edge_index], dim=1).to(self.device)
+            self.H_edge_index = torch.cat(
+                [self.H_edge_index, new_edge_index], dim=1
+            ).to(self.device)
 
         # cutoff
         max_val = new_edge_weight[0].item()
@@ -65,9 +77,15 @@ class RecurrentGNN(nn.Module):
         assert self.H_edge_index is not None
 
         if edge_weight is None:
-            new_edge_weight = torch.ones_like(edge_index[0, :]).detach().to(self.device, dtype=torch.float)
+            new_edge_weight = (
+                torch.ones_like(edge_index[0, :])
+                .detach()
+                .to(self.device, dtype=torch.float)
+            )
         else:
-            new_edge_weight = edge_weight.detach().clone().to(self.device, dtype=torch.float)
+            new_edge_weight = (
+                edge_weight.detach().clone().to(self.device, dtype=torch.float)
+            )
 
         if self.last_match_training:
             # last match was training match
@@ -81,8 +99,12 @@ class RecurrentGNN(nn.Module):
             self.H_edge_index = self.H_edge_index[:, :-2]
 
         new_edge_index = edge_index.detach().clone().to(self.device)
-        self.H_edge_index = torch.cat([self.H_edge_index, new_edge_index], dim=1).to(self.device)
-        self.H_edge_weight = torch.cat([self.H_edge_weight, new_edge_weight]).to(self.device, dtype=torch.float)
+        self.H_edge_index = torch.cat(
+            [self.H_edge_index, new_edge_index], dim=1
+        ).to(self.device)
+        self.H_edge_weight = torch.cat(
+            [self.H_edge_weight, new_edge_weight]
+        ).to(self.device, dtype=torch.float)
 
     def reset_index(self):
         self.H_edge_index = None

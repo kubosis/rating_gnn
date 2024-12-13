@@ -17,4 +17,3 @@ def time_debug(func: Callable):
         return result
 
     return wrap
-

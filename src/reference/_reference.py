@@ -72,9 +72,7 @@ class RatingReference:
                 S_h = (
                     1.0
                     if home_pts > away_pts
-                    else 0.0
-                    if home_pts < away_pts
-                    else 1 / 2
+                    else 0.0 if home_pts < away_pts else 1 / 2
                 )
 
                 E_HS.append(E_h)
@@ -90,7 +88,9 @@ class RatingReference:
                 elos.append((elos_b4, (elo[h_i], elo[a_i])))
 
                 if verbose:
-                    print(f"iteration {iter_}, rating: {elo}, E_H = {E_h}; {S_h}")
+                    print(
+                        f"iteration {iter_}, rating: {elo}, E_H = {E_h}; {S_h}"
+                    )
                 iter_ += 1
         return [np.array(elo)]
 
@@ -127,8 +127,12 @@ class RatingReference:
                 aatt, adef = att_[a_i], def_[a_i]
 
                 # prediction
-                ghat_h = alpha_h / (1 + torch.exp(-beta_h * (hatt + adef) - bias_h))
-                ghat_a = alpha_a / (1 + torch.exp(-beta_a * (aatt + hdef) - bias_a))
+                ghat_h = alpha_h / (
+                    1 + torch.exp(-beta_h * (hatt + adef) - bias_h)
+                )
+                ghat_a = alpha_a / (
+                    1 + torch.exp(-beta_a * (aatt + hdef) - bias_a)
+                )
 
                 # update
                 att_[h_i] += lr_h_att * (home_pts - ghat_h)
@@ -148,8 +152,12 @@ class RatingReference:
         default: float = 1000.0,
     ) -> Sequence[np.ndarray]:
 
-        home_rating = torch.zeros((self.num_teams,), dtype=torch.float64) + default
-        away_rating = torch.zeros((self.num_teams,), dtype=torch.float64) + default
+        home_rating = (
+            torch.zeros((self.num_teams,), dtype=torch.float64) + default
+        )
+        away_rating = (
+            torch.zeros((self.num_teams,), dtype=torch.float64) + default
+        )
 
         def psi(c, e):
             return c * torch.log10(1 + e)

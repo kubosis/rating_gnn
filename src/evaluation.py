@@ -31,23 +31,35 @@ class Evaluation:
 
     @staticmethod
     def objective(trial: optuna.Trial, dataset, team_count, run_name):
-        rgnn_choice = trial.suggest_categorical("rgnn_choice", ["GCONV_GRU", "GCONV_ELMAN"])
+        rgnn_choice = trial.suggest_categorical(
+            "rgnn_choice", ["GCONV_GRU", "GCONV_ELMAN"]
+        )
         rating = "berrar"
         K = 10
         normalization = None
         if rgnn_choice == "GCONV_GRU":
             gconv_choice = "ChebConv"
         elif rgnn_choice == "GCONV_ELMAN":
-            gconv_choice = trial.suggest_categorical("gconv_choice", ["GraphConv", "GCNConv", "ChebConv"])
+            gconv_choice = trial.suggest_categorical(
+                "gconv_choice", ["GraphConv", "GCNConv", "ChebConv"]
+            )
         else:
-            gconv_choice = trial.suggest_categorical("gconv_choice", ["GraphConv", "GCNConv", "ChebConv"])
+            gconv_choice = trial.suggest_categorical(
+                "gconv_choice", ["GraphConv", "GCNConv", "ChebConv"]
+            )
 
         if gconv_choice == "ChebConv":
             K = trial.suggest_int("K", 2, 10)
-            normalization = trial.suggest_categorical("normalization", [None, "rw"])
+            normalization = trial.suggest_categorical(
+                "normalization", [None, "rw"]
+            )
 
-        lr_hyper = trial.suggest_float("lr_hyper", 0.0005, 0.02)  # 0.010356261748813426
-        lr_rating = trial.suggest_float("lr_rating", 0.5, 8)  # 2.56094697452784
+        lr_hyper = trial.suggest_float(
+            "lr_hyper", 0.0005, 0.02
+        )  # 0.010356261748813426
+        lr_rating = trial.suggest_float(
+            "lr_rating", 0.5, 8
+        )  # 2.56094697452784
 
         epochs = 1
         val_ratio = 0.1
@@ -97,7 +109,9 @@ class Evaluation:
         np.save(train_path, run_train_acc)
         np.save(val_path, run_val_acc)
 
-        with mlflow.start_run(nested=True, run_name=run_name + f"_sub_{trial.number}"):
+        with mlflow.start_run(
+            nested=True, run_name=run_name + f"_sub_{trial.number}"
+        ):
             # Log hyperparameters to MLflow
             mlflow.log_param("dropout_rate", dropout_rate)
             mlflow.log_param("embed_dim", embed_dim)
@@ -122,13 +136,17 @@ class Evaluation:
 
     @staticmethod
     def objective_test(trial, dataset, team_count, run_name):
-        rgnn_choice = trial.suggest_categorical("rgnn_choice", ["GCONV_GRU", "GCONV_ELMAN"])
+        rgnn_choice = trial.suggest_categorical(
+            "rgnn_choice", ["GCONV_GRU", "GCONV_ELMAN"]
+        )
         if rgnn_choice == "GCONV_GRU":
             gconv_choice = "ChebConv"
         elif rgnn_choice == "GCONV_ELMAN":
             gconv_choice = "GCNConv"  # trial.suggest_categorical("gconv_choice", ["GraphConv", "GCNConv", "ChebConv"])
         else:
-            gconv_choice = trial.suggest_categorical("gconv_choice", ["GraphConv", "GCNConv", "ChebConv"])
+            gconv_choice = trial.suggest_categorical(
+                "gconv_choice", ["GraphConv", "GCNConv", "ChebConv"]
+            )
 
         # c = 5.5
         # d = 275
@@ -158,14 +176,18 @@ class Evaluation:
             # d=d
         )
 
-        with mlflow.start_run(nested=True, run_name=run_name + f"_sub_{trial.number}"):
+        with mlflow.start_run(
+            nested=True, run_name=run_name + f"_sub_{trial.number}"
+        ):
             mlflow.log_param("gconv_choice{a}", gconv_choice)
             mlflow.log_param("rgnn_choice", rgnn_choice)
             mlflow.log_param("dropout_rate", 0.2)
             mlflow.log_metric(f"val_loss", score)
             mlflow.log_metric("valid_acc", acc)
-        logger.info(f"Trial {trial.number} score: {score}, acc: {acc}  | gconv_choice: {gconv_choice},"
-                    f" rgnn_choice: {rgnn_choice}, drop {0.2}")
+        logger.info(
+            f"Trial {trial.number} score: {score}, acc: {acc}  | gconv_choice: {gconv_choice},"
+            f" rgnn_choice: {rgnn_choice}, drop {0.2}"
+        )
 
         return score  # score when minimizing, acc when maximizing
 
@@ -190,24 +212,32 @@ class Evaluation:
             1,
             0.15,
             training_callback=Evaluation.epochs_mlflow_callback,
-            callback_kwargs={"run_name": run_name, },
+            callback_kwargs={
+                "run_name": run_name,
+            },
         )
 
         return score
 
     @staticmethod
     def objective_elo(trial, dataset, team_count, run_name):
-        c = trial.suggest_float("c", 0.1, 10.)
-        d = trial.suggest_float("d", 1., 1000.)
-        gamma = trial.suggest_float("gamma", 0.01, 5.)
-        score, acc = Evaluation.train_elo(dataset, team_count, 0.1, c=c, d=d, gamma=gamma)
-        with mlflow.start_run(nested=True, run_name=run_name + f"_sub_{trial.number}"):
+        c = trial.suggest_float("c", 0.1, 10.0)
+        d = trial.suggest_float("d", 1.0, 1000.0)
+        gamma = trial.suggest_float("gamma", 0.01, 5.0)
+        score, acc = Evaluation.train_elo(
+            dataset, team_count, 0.1, c=c, d=d, gamma=gamma
+        )
+        with mlflow.start_run(
+            nested=True, run_name=run_name + f"_sub_{trial.number}"
+        ):
             mlflow.log_param("c", c)
             mlflow.log_param("d", d)
             mlflow.log_param("gamma", gamma)
             mlflow.log_metric(f"val_loss", score)
             mlflow.log_metric("valid_acc", acc)
-        logger.info(f"Trial {trial.number} score: {score}, acc: {acc}  | c: {c}, d: {d}, gamma: {gamma}")
+        logger.info(
+            f"Trial {trial.number} score: {score}, acc: {acc}  | c: {c}, d: {d}, gamma: {gamma}"
+        )
         return acc
 
     @staticmethod
@@ -216,32 +246,34 @@ class Evaluation:
             mlflow.log_param(f"epochs", epochs)
             mlflow.log_metric(f"score", score)
             mlflow.log_metric("valid_acc", acc)
-        logger.success(f"Done epoch {epochs} with score {score} and validation accuracy {acc}")
+        logger.success(
+            f"Done epoch {epochs} with score {score} and validation accuracy {acc}"
+        )
 
     @staticmethod
     def train(
-            dataset,
-            team_count: int,
-            lr_hyperparams: float,
-            lr_rating: float,
-            epochs: int,
-            val_ratio: float,
-            embed_dim: int,
-            discount: float,
-            correction: bool,
-            activation: str,
-            K: int,
-            rgnn_conv: str,
-            graph_conv: str,
-            rating: str,
-            dense_layers: int,
-            conv_layers: int,
-            dropout_rate: float,
-            training_callback=None,
-            callback_kwargs=None,
-            norm=None,
-            loss_fn=torch.nn.MSELoss(),
-            **rating_kwargs
+        dataset,
+        team_count: int,
+        lr_hyperparams: float,
+        lr_rating: float,
+        epochs: int,
+        val_ratio: float,
+        embed_dim: int,
+        discount: float,
+        correction: bool,
+        activation: str,
+        K: int,
+        rgnn_conv: str,
+        graph_conv: str,
+        rating: str,
+        dense_layers: int,
+        conv_layers: int,
+        dropout_rate: float,
+        training_callback=None,
+        callback_kwargs=None,
+        norm=None,
+        loss_fn=torch.nn.MSELoss(),
+        **rating_kwargs,
     ):
         model = RatingRGNN(
             team_count,
@@ -259,7 +291,7 @@ class Evaluation:
             dense_layers=dense_layers,
             conv_layers=conv_layers,
             dropout_rate=dropout_rate,
-            **rating_kwargs
+            **rating_kwargs,
         )
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -271,12 +303,18 @@ class Evaluation:
             lr_hyperparams,
             lr_rating,
             loss_fn=loss_fn,
-            train_ratio=1.
+            train_ratio=1.0,
             # since we are interested only in validation metrics we dont need explicit testing in the end of dataset
         )
-        train_acc_run, val_acc_run =\
-            trainer.train(epochs, val_ratio=val_ratio, verbose=True, bidir=True,
-                          callback=training_callback, callback_kwarg_dict=callback_kwargs, gamma=3)
+        train_acc_run, val_acc_run = trainer.train(
+            epochs,
+            val_ratio=val_ratio,
+            verbose=True,
+            bidir=True,
+            callback=training_callback,
+            callback_kwarg_dict=callback_kwargs,
+            gamma=3,
+        )
         metric = trainer.get_eval_metric("val_loss")
         acc = trainer.get_eval_metric("val_accuracy")
         return metric, acc, train_acc_run, val_acc_run
@@ -290,7 +328,7 @@ class Evaluation:
         trainer = Trainer(
             dataset,
             elo,
-            train_ratio=1.
+            train_ratio=1.0,
             # since we are interested only in validation metrics we dont need explicit testing in the end of dataset
         )
 
@@ -300,8 +338,12 @@ class Evaluation:
         return metric, acc
 
     @staticmethod
-    def evaluate(raw_data, n_trials=10, run_name="rating", experiment_name="exp"):
-        transform = DataTransformation(raw_data, snapshot_duration=timedelta(days=365))
+    def evaluate(
+        raw_data, n_trials=10, run_name="rating", experiment_name="exp"
+    ):
+        transform = DataTransformation(
+            raw_data, snapshot_duration=timedelta(days=365)
+        )
         dataset = transform.get_dataset(
             node_f_extract=False, edge_f_one_hot=True, drop_draws=True
         )
@@ -315,7 +357,10 @@ class Evaluation:
             # Run the optimization process
             study.optimize(
                 lambda trial: Evaluation.objective(
-                    trial, dataset, transform.num_teams, run_name), n_trials=n_trials)
+                    trial, dataset, transform.num_teams, run_name
+                ),
+                n_trials=n_trials,
+            )
 
             # Evaluation.objective_epochs(dataset, transform.num_teams, run_name)
 
@@ -334,12 +379,21 @@ if __name__ == "__main__":
 
     if torch.cuda.is_available():
         logger.info("Will train on CUDA...")
-    logger.info(f"starting to evaluate {n_trials} trials, berrar_match_result_pred all snapshots minim")
+    logger.info(
+        f"starting to evaluate {n_trials} trials, berrar_match_result_pred all snapshots minim"
+    )
     da = DataAcquisition()
-    df = da.get_data(FROM_CSV, fname="../resources/other_leagues.csv")  # other_leagues, european_leagues_basketball
-    df['DT'] = pd.to_datetime(df['DT'], format="%Y-%m-%d %H:%M:%S")
-    filtered_df = df[df['League'] == 'NBL']
+    df = da.get_data(
+        FROM_CSV, fname="../resources/other_leagues.csv"
+    )  # other_leagues, european_leagues_basketball
+    df["DT"] = pd.to_datetime(df["DT"], format="%Y-%m-%d %H:%M:%S")
+    filtered_df = df[df["League"] == "NBL"]
     filtered_df = filtered_df.reset_index()
-    filtered_df = filtered_df.sort_values(by='DT', ascending=False)
+    filtered_df = filtered_df.sort_values(by="DT", ascending=False)
 
-    Evaluation.evaluate(filtered_df, n_trials, "berrar_match_result_pred", "berrar_all_snapshots")
+    Evaluation.evaluate(
+        filtered_df,
+        n_trials,
+        "berrar_match_result_pred",
+        "berrar_all_snapshots",
+    )

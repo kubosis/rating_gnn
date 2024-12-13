@@ -15,7 +15,11 @@ class Dummy:
     @staticmethod
     def _resolve_conf(conf: str) -> list:
         out = [[], [], []]
-        resolved = {"h": ["home", 10, 0], "a": ["away", 0, 10], "d": ["draw", 5, 5]}
+        resolved = {
+            "h": ["home", 10, 0],
+            "a": ["away", 0, 10],
+            "d": ["draw", 5, 5],
+        }
         for c in conf.lower():
             assert c in ["h", "a", "d"]
             res = resolved[c]

@@ -19,7 +19,9 @@ __all__ = [
 ]
 
 
-def process_kwargs(mandatory: list, **kwargs) -> tuple[list[Any], dict[str, Any]]:
+def process_kwargs(
+    mandatory: list, **kwargs
+) -> tuple[list[Any], dict[str, Any]]:
     """check kwargs and return list of popped values and updated kwargs"""
     ret_list = []
     for elem in mandatory:
@@ -57,10 +59,14 @@ def print_rating_diff(
         rating_ana_i = analytical.ratings[rat]
         for i in range(len(rating_num_i)):
             auto = float(
-                rating_num_i[transform.team_mapping[transform.inv_team_mapping[i]]]
+                rating_num_i[
+                    transform.team_mapping[transform.inv_team_mapping[i]]
+                ]
             )
             grad = float(
-                rating_ana_i[transform.team_mapping[transform.inv_team_mapping[i]]]
+                rating_ana_i[
+                    transform.team_mapping[transform.inv_team_mapping[i]]
+                ]
             )
             diff = abs(auto - grad)
             if diff > eps:
@@ -124,7 +130,9 @@ def generate_random_matches(
 
         for _ in range(1, length):
             # Select a random element that is not the same as the last element in the sequence
-            next_element = random.choice([el for el in elements if el != sequence[-1]])
+            next_element = random.choice(
+                [el for el in elements if el != sequence[-1]]
+            )
             sequence.append(next_element)
 
         return sequence
@@ -143,9 +151,7 @@ def generate_random_matches(
         winner = (
             "home"
             if rand_home > rand_away
-            else "away"
-            if rand_home < rand_away
-            else "draw"
+            else "away" if rand_home < rand_away else "draw"
         )
         winners.append(winner)
         home_points.append(rand_home)
@@ -156,7 +162,14 @@ def generate_random_matches(
     delta2 = timedelta(days=366)
     now = datetime.now()
     for i in range(season_count):
-        dt.extend([*[now - i * delta2 + j * delta1 for j in range(matches_per_season)]])
+        dt.extend(
+            [
+                *[
+                    now - i * delta2 + j * delta1
+                    for j in range(matches_per_season)
+                ]
+            ]
+        )
 
     data = pd.DataFrame(
         {

@@ -23,11 +23,13 @@ class DataTransformation:
             "Winner",
             "Home_points",
             "Away_points",
-            "Season"
+            "Season",
         ]
         if "league_years" in df.columns:
-            df.rename(columns={'league_years': 'Season'}, inplace=True)
-        self.df: pd.DataFrame = df.loc[:, df.columns.intersection(needed_columns)]
+            df.rename(columns={"league_years": "Season"}, inplace=True)
+        self.df: pd.DataFrame = df.loc[
+            :, df.columns.intersection(needed_columns)
+        ]
         self.team_mapping: dict = {}
         self.inv_team_mapping: dict = {}
         self.wld_mapping: dict = {}
@@ -41,7 +43,9 @@ class DataTransformation:
         self.snapshots = list(np.sort(self.df["Season"].unique()))
 
     def _create_teams_mapping(self) -> None:
-        teams = np.sort(pd.concat([self.df["Home"], self.df["Away"]], axis=0).unique())
+        teams = np.sort(
+            pd.concat([self.df["Home"], self.df["Away"]], axis=0).unique()
+        )
         team_ids = list(range(len(teams)))
         self.team_mapping = dict(zip(teams, team_ids))
         self.teams = list(teams)
@@ -54,7 +58,9 @@ class DataTransformation:
 
     def _map_match_outcomes(self, verbose: bool, drop_draws: bool) -> None:
         if drop_draws:
-            self.df.drop(self.df[self.df["Winner"] == "draw"].index, inplace=True)
+            self.df.drop(
+                self.df[self.df["Winner"] == "draw"].index, inplace=True
+            )
             self.df.loc[self.df["Winner"] == "home", "Winner"] = 1
             self.df.loc[self.df["Winner"] == "away", "Winner"] = 0
         else:
@@ -127,11 +133,15 @@ class DataTransformation:
 
             if use_draws:
                 home_draws_series = (
-                    df_i.loc[df_i["Winner"] == 1].groupby("Home").count()["Winner"]
+                    df_i.loc[df_i["Winner"] == 1]
+                    .groupby("Home")
+                    .count()["Winner"]
                 )
                 home_draws[home_draws_series.index] = home_draws_series.values
                 away_draws_series = (
-                    df_i.loc[df_i["Winner"] == 1].groupby("Away").count()["Winner"]
+                    df_i.loc[df_i["Winner"] == 1]
+                    .groupby("Away")
+                    .count()["Winner"]
                 )
                 away_draws[away_draws_series.index] = away_draws_series.values
                 home_draws_norm = normalize_array(home_draws)
@@ -150,7 +160,12 @@ class DataTransformation:
                 node_features.append(features_i.astype(float))
             else:
                 features_i = np.stack(
-                    [home_wins_norm, home_losses_norm, away_wins_norm, away_losses_norm]
+                    [
+                        home_wins_norm,
+                        home_losses_norm,
+                        away_wins_norm,
+                        away_losses_norm,
+                    ]
                 ).transpose()
                 node_features.append(features_i.astype(float))
 
@@ -167,7 +182,9 @@ class DataTransformation:
 
     def _extract_dynamic_edges_and_labels(
         self, one_hot: bool, use_draws: bool = False
-    ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+    ) -> tuple[
+        list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray]
+    ]:
         """extract dynamically changing edges and their features"""
         delta = self.delta
         start_date = self.start_date
@@ -188,27 +205,37 @@ class DataTransformation:
                 df_i = df_i.drop(last_df_i.index, errors="ignore")
             df_i = df_i.sort_values(by="DT")
 
-            edges.append(df_i.loc[:, ["Home", "Away"]].to_numpy().astype(int).T)
+            edges.append(
+                df_i.loc[:, ["Home", "Away"]].to_numpy().astype(int).T
+            )
 
             match_outcomes = df_i.loc[:, ["Winner"]].values.astype(int)
             if one_hot:
                 match_outcomes = np.apply_along_axis(
-                    lambda x: one_hot_encode(x[0], one_hot_dim), 1, match_outcomes
+                    lambda x: one_hot_encode(x[0], one_hot_dim),
+                    1,
+                    match_outcomes,
                 )
             else:
                 match_outcomes = normalize_array(match_outcomes)
             edge_features.append(match_outcomes)
 
-            points = df_i.loc[:, ["Home_points", "Away_points"]].values.astype(int)
+            points = df_i.loc[:, ["Home_points", "Away_points"]].values.astype(
+                int
+            )
             match_points.append(points)
 
             team_points = np.zeros((self.num_teams,))
             team_ranks = np.zeros((self.num_teams,))
             away_team_wins = (
-                df_i.loc[df_i["Winner"] == 2].groupby(["League", "Away"]).count()
+                df_i.loc[df_i["Winner"] == 2]
+                .groupby(["League", "Away"])
+                .count()
             )
             home_team_wins = (
-                df_i.loc[df_i["Winner"] == 0].groupby(["League", "Home"]).count()
+                df_i.loc[df_i["Winner"] == 0]
+                .groupby(["League", "Home"])
+                .count()
             )
             team_points[
                 away_team_wins.index.get_level_values(1).to_numpy()

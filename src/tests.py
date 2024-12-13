@@ -8,12 +8,7 @@ import torch.nn
 
 from data import *
 from dummy import get_dummy_df, Dummy
-from models.ratings import (
-    EloSymbolical,
-    Elo,
-    Berrar,
-    EloManual, BerrarManual
-)
+from models.ratings import EloSymbolical, Elo, Berrar, EloManual, BerrarManual
 from reference import *
 from models.gnn import GConvElman, RatingRGNN
 from trainer import Trainer
@@ -25,7 +20,9 @@ def eval_symbolic_elo(transform):
 
     team_count = transform.num_teams
 
-    elo_sym = EloSymbolical(team_count=team_count, rating_dim=3, hp_grad=True, k=5)
+    elo_sym = EloSymbolical(
+        team_count=team_count, rating_dim=3, hp_grad=True, k=5
+    )
     trainer = Trainer(dataset)
     trainer.model = elo_sym
     trainer.train_ratio = 0.8
@@ -113,7 +110,13 @@ def test_eval_rating_gnn(transform, **kwargs):
         train_ratio=1,
     )
     predictions_arr = []
-    trn_acc, val_acc = trainer.train(epochs=1, val_ratio=0, verbose=True, bidir=True, predictions=predictions_arr)
+    trn_acc, val_acc = trainer.train(
+        epochs=1,
+        val_ratio=0,
+        verbose=True,
+        bidir=True,
+        predictions=predictions_arr,
+    )
 
     if rtg is None:
         rtg = "norating"
@@ -127,12 +130,12 @@ def test_eval_rating_gnn(transform, **kwargs):
 
 
 def test_dummy_id_all(
-        test_fn=test_eval_rating_gnn,
-        dummy_id=0,
-        conf_len=3,
-        conf_chars="ha",
-        verbose=False,
-        rating="elo",
+    test_fn=test_eval_rating_gnn,
+    dummy_id=0,
+    conf_len=3,
+    conf_chars="ha",
+    verbose=False,
+    rating="elo",
 ):
     for config in product(conf_chars, repeat=conf_len):
         print(f"config: {config}")
@@ -143,12 +146,12 @@ def test_dummy_id_all(
 
 
 def test_dummy_generate_all(
-        test_fn=test_eval_rating_gnn,
-        match_count=3,
-        team_count=4,
-        conf_chars="ha",
-        verbose=False,
-        rating="elo",
+    test_fn=test_eval_rating_gnn,
+    match_count=3,
+    team_count=4,
+    conf_chars="ha",
+    verbose=False,
+    rating="elo",
 ):
     for config in product(conf_chars, repeat=match_count):
         print(f"config: {config}")
@@ -159,7 +162,11 @@ def test_dummy_generate_all(
 
 
 def test_dummy_id_one(
-        test_fn=test_eval_rating_gnn, dummy_id=0, conf="hhh", verbose=True, rating="elo"
+    test_fn=test_eval_rating_gnn,
+    dummy_id=0,
+    conf="hhh",
+    verbose=True,
+    rating="elo",
 ):
     dummy = get_dummy_df(dummy_id, conf=conf)
     transform = DataTransformation(dummy, timedelta(days=365))
@@ -190,7 +197,9 @@ def eval_manual(df, dataset_str, rating="Elo"):
         # r = PiManual(transform.num_teams)
     trainer = Trainer(dataset, r, train_ratio=1)
     pred_arr = []
-    trn_acc, val_acc = trainer.train(epochs=1, val_ratio=0, verbose=True, bidir=True, predictions=pred_arr)
+    trn_acc, val_acc = trainer.train(
+        epochs=1, val_ratio=0, verbose=True, bidir=True, predictions=pred_arr
+    )
     np.savetxt("Manual" + rating + "_" + dataset_str + "_val.log", val_acc)
     np.savetxt("Manual" + rating + "_" + dataset_str + "_train.log", trn_acc)
     np.savetxt(f"{rating}_predictions.txt", np.array(pred_arr), fmt="%.4f")
@@ -198,11 +207,13 @@ def eval_manual(df, dataset_str, rating="Elo"):
 
 def nbl(rtg):
     da = DataAcquisition()
-    df = da.get_data(FROM_CSV, fname="../resources/european_leagues_basketball.csv")
-    df['DT'] = pd.to_datetime(df['DT'], format="%Y-%m-%d %H:%M:%S")
-    filtered_df = df[df['League'] == 'NBL']
+    df = da.get_data(
+        FROM_CSV, fname="../resources/european_leagues_basketball.csv"
+    )
+    df["DT"] = pd.to_datetime(df["DT"], format="%Y-%m-%d %H:%M:%S")
+    filtered_df = df[df["League"] == "NBL"]
     filtered_df = filtered_df.reset_index()
-    filtered_df = filtered_df.sort_values(by='DT', ascending=False)
+    filtered_df = filtered_df.sort_values(by="DT", ascending=False)
     transform = DataTransformation(filtered_df, timedelta(days=365))
     if "manual" in rtg:
         rating = rtg.split("_")[0]
@@ -216,8 +227,8 @@ def test_eval(rtg, dataset_str, fname):
 
     da = DataAcquisition()
     df = da.get_data(FROM_CSV, fname=fname)
-    df['DT'] = pd.to_datetime(df['DT'], format="%Y-%m-%d %H:%M:%S")
-    df = df.sort_values(by='DT', ascending=False)
+    df["DT"] = pd.to_datetime(df["DT"], format="%Y-%m-%d %H:%M:%S")
+    df = df.sort_values(by="DT", ascending=False)
     transform = DataTransformation(df, timedelta(days=365))
 
     if "manual" in rtg:
@@ -233,8 +244,10 @@ def main():
     #    test_fn=test_eval_rating_gnn, conf="hah", dummy_id=0
     # )
     # test_dummy_id_all(test_fn=gnn_rating_test, rating='berrar', verbose=True)
-    #nbl("pi")
-    test_eval("pi", "european_basket", "../resources/european_leagues_basketball.csv")
+    # nbl("pi")
+    test_eval(
+        "pi", "european_basket", "../resources/european_leagues_basketball.csv"
+    )
     # test_eval("Berrar_manual", "Premier", "../resources/Premier_League_England.csv")
     # test_eval("elo", "NFL", "../resources/NFL_USA.csv")
 
