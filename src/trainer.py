@@ -1,380 +1,133 @@
-from typing import Optional, Sequence
+import copy
+from typing import Optional, Callable
 
 import torch
-import torch.nn.functional as F
-from torch import Tensor
 import torch.nn as nn
+from torch import Tensor
 from torch.nn import CrossEntropyLoss
-from torch_geometric_temporal.signal import (
-    temporal_signal_split,
-    DynamicGraphTemporalSignal,
-)
+from torch_geometric_temporal.signal import temporal_signal_split, DynamicGraphTemporalSignal
+
 import numpy as np
 from loguru import logger
 
+from .gnn import RecurrentGNN
+
+def no_grad_when_validating(fcn):
+    """
+    If keyword 'validation' present and set to True we call the decorated function fcn with torch.no_grad() context
+    """
+    def cond_no_grad(*args, **kwargs):
+        if kwargs.get("validation", False):
+            with torch.no_grad():
+                fcn(*args, **kwargs)
+        else:
+            fcn(*args, **kwargs)
+
+    return cond_no_grad
 
 class Trainer:
-    """
-    Basic training class for predefined models
-    """
-
     def __init__(
-        self,
-        dataset: Optional[DynamicGraphTemporalSignal] = None,
-        model: Optional[nn.Module] = None,
-        lr: float = 0.001,
-        lr_rating: float = 3.0,
-        loss_fn=CrossEntropyLoss(),
-        train_ratio: float = 0.8,
-        optim=torch.optim.Adam,
-        **kwargs,
+            self,
+            dataset: DynamicGraphTemporalSignal,
+            model: RecurrentGNN,
+            lr_weights: float = 0.001,
+            lr_rating: float = 3.0,
+            train_ratio: float = 0.8,
+            bidirectional_edges: bool = False,
+            output_classes_weights: Optional[Tensor] = None,
     ):
+        # Dataset
+        trn, tst = temporal_signal_split(dataset, train_ratio=train_ratio)
+        self._train_val_dataset, self._test_dataset = trn, tst
 
-        self._train_dataset, self._test_dataset = None, None
-        self._train_ratio = train_ratio
+        # Model, lr, loss fn
+        self._model: nn.Module = model
+        self._lr_weights: float = lr_weights
+        self._lr_rating: float = lr_rating
+        self._loss = CrossEntropyLoss(weight=output_classes_weights)
 
-        if dataset is not None:
-            self.dataset = dataset
-        else:
-            self._dataset = None
+        # Optimizer
+        self._optim = torch.optim.SGD(
+            [
+                {"params": model.embedding.parameters(), "lr": self._lr_rating},
+            ],
+            lr=self._lr_weights,
+        )
+        for m in model.gconv_layers:
+            self._optim.add_param_group({"params": m.parameters(), "lr": self._lr_weights})
+        if model.linear_layers is not None:
+            for m in model.linear_layers:
+                self._optim.add_param_group({"params": m.parameters(), "lr": self._lr_weights})
+        if model.rating is not None:
+            self._optim.add_param_group({"params": model.rating.parameters(), "lr": self._lr_weights})
 
-        self._lr = lr
-        self._lr_rating = lr_rating
-        self.optim = optim
-        self.model_is_rating = False
-        self.device = None
+        # Caching training data for MLFlow
+        self._val_acc: list[float] = [] # length = number of epochs
+        self._val_loss: list[float] = []
+        self._train_acc: list[float] = []
+        self._train_loss: list[float] = []
+        self._test_acc: float = 0.
+        self._test_loss: float = 0.
 
-        if model is not None:
-            self.model = model
-        else:
-            self._model = None
-
-        self.loss_fn = loss_fn
-
-        self.val_accuracy = 0
-        self.val_loss = float("inf")
-        self.train_accuracy = 0
-        self.train_loss = float("inf")
-        self.test_accuracy = 0
-        self.test_loss = float("inf")
-
+        # use CUDA if available
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.device = device
+        self._device = device
+
+        self._verbose: bool = False
+        self._bidirectional_edges: bool = bidirectional_edges
 
     @property
-    def model(self) -> nn.Module:
-        return self._model
-
-    @model.setter
-    def model(self, model: nn.Module):
-        if not isinstance(model, nn.Module):
-            logger.error("Unsupported model type")
-            raise TypeError("Unsupported model type")
-
-        self._model = model
-        if hasattr(model, "is_rating") and model.is_rating:
-            self.model_is_rating = True
-
-            # does rating need to compute hyperparameters backward pass?
-            if model.hp_grad:
-                self.optim = torch.optim.Adam(
-                    [
-                        {"params": model.ratings, "lr": self._lr_rating},
-                        {"params": model.hyperparams, "lr": self._lr},
-                    ]
-                )
-            else:
-                self.optim = torch.optim.SGD(model.ratings, self._lr_rating)
-        else:
-            self.model_is_rating = False
-
-            self.optim = torch.optim.SGD(
-                [
-                    {
-                        "params": model.embedding.parameters(),
-                        "lr": self._lr_rating,
-                    },
-                ],
-                lr=self._lr,
-            )
-            for m in model.gconv_layers:
-                self.optim.add_param_group(
-                    {"params": m.parameters(), "lr": self._lr}
-                )
-            if model.linear_layers is not None:
-                for m in model.linear_layers:
-                    self.optim.add_param_group(
-                        {"params": m.parameters(), "lr": self._lr}
-                    )
-            if model.rating is not None:
-                self.optim.add_param_group(
-                    {"params": model.rating.parameters(), "lr": self._lr}
-                )
-
-    @model.deleter
-    def model(self):
-        del self._model
-        del self.optim
-        self._model = self.optim = None
-        self.model_is_rating = False
+    def val_acc(self) -> list[float]:
+        return self._val_acc
 
     @property
-    def dataset(self) -> DynamicGraphTemporalSignal:
-        return self._dataset
-
-    @dataset.setter
-    def dataset(self, dataset: DynamicGraphTemporalSignal):
-        self._dataset = dataset
-        trn, tst = temporal_signal_split(dataset, train_ratio=self.train_ratio)
-        self._train_dataset, self._test_dataset = trn, tst
-
-    @dataset.deleter
-    def dataset(self):
-        del self._dataset
-        del self._train_dataset
-        del self._test_dataset
-        self._dataset = self._train_dataset = self._test_dataset = None
+    def val_loss(self) -> list[float]:
+        return self._val_loss
 
     @property
-    def train_ratio(self):
-        return self._train_ratio
+    def train_acc(self) -> list[float]:
+        return self._train_acc
 
-    @train_ratio.setter
-    def train_ratio(self, train_ratio: float):
+    @property
+    def train_loss(self) -> list[float]:
+        return self._train_loss
 
-        assert isinstance(train_ratio, float) or train_ratio == 1.0
-        assert 0 < train_ratio <= 1, "Training ratio has to be in (0, 1]"
+    @property
+    def test_acc(self) -> float:
+        return self._test_acc
 
-        self._train_ratio = train_ratio
-        if self.dataset is not None:
-            trn, tst = temporal_signal_split(
-                self.dataset, train_ratio=self.train_ratio
-            )
-            self._train_dataset, self._test_dataset = trn, tst
+    @property
+    def test_loss(self) -> float:
+        return self._test_loss
 
-    def set_lr(self, lr: float, lr_type: str = "hyperparam"):
-        assert lr_type.lower() in ["rating", "hyperparam"]
+    def _log(self, fstring: str, level: str = 'info', *args, **kwargs):
+        if not self._verbose:
+            return
+        if level == 'info':
+            logger.info(fstring, *args, **kwargs)
+        elif level == 'debug':
+            logger.debug(fstring, *args, **kwargs)
+        elif level == 'error':
+            logger.error(fstring, *args, **kwargs)
 
-        if lr_type.lower() == "rating":
-            self._lr_rating = lr
-        else:
-            self._lr = lr
-
-        # reset model so that lr is written into optimizer
-        self.model = self.model
-
-    def train(
-        self,
-        epochs: int = 100,
-        verbose: bool = False,
-        val_ratio: float = 0.0,
-        callback=None,
-        callback_kwarg_dict=None,
-        **kwargs,
-    ) -> Sequence[np.ndarray]:
-
-        assert self.model is not None, "Model has to be set"
-        assert self.dataset is not None, "Dataset has to be set"
-        assert 0 <= val_ratio < 1, "Validation ratio has to be in [0, 1)"
-
-        if callback is not None:
-            logger.info("Starting training with registered callback")
-
-        training_accuracy = []
-        validation_accuracy = []
-
-        for epoch in range(epochs):
-
-            trn_acc, trn_loss, trn_count = 0, 0, 0
-            val_acc, val_loss, val_count = 0, 0, 0
-            if not self.model_is_rating:
-                self.model.reset_index()
-            for time, snapshot in enumerate(self._train_dataset):
-                matches = snapshot.edge_index.to(self.device)
-                outcomes = snapshot.edge_attr.to(
-                    self.device
-                )  # edge weight encodes the match outcome
-                match_points = snapshot.match_points.to(self.device)
-
-                # split train / val data
-                matches_count = matches.shape[1]
-                trn_size = np.ceil(matches_count * (1 - val_ratio)).astype(int)
-
-                matches_train = matches[:, :trn_size]
-                y_train = outcomes[:trn_size, :]
-                match_pts_trn = match_points[:trn_size, :]
-                trn_count_i = matches_train.shape[1]
-                trn_count += trn_count_i
-
-                matches_val = matches[:, trn_size:]
-                y_val = outcomes[trn_size:, :]
-                match_pts_val = match_points[trn_size:, :]
-                val_count_i = matches_val.shape[1]
-                val_count += val_count_i
-
-                # training
-                if self.model_is_rating:
-                    trn_acc_i, trn_loss_i = self._train_rating(
-                        matches_train, y_train, match_pts_trn, **kwargs
-                    )
-                else:
-                    trn_acc_i, trn_loss_i = self._train_gnn(
-                        matches_train,
-                        y_train,
-                        match_pts_trn,
-                        verbose,
-                        **kwargs,
-                    )
-
-                logger.info(
-                    f"Training {time} ended with loss {trn_loss_i:.4f} and accuracy {trn_acc_i / trn_count_i:.4f}"
-                )
-
-                trn_acc += trn_acc_i
-                trn_loss += trn_loss_i
-
-                # validation
-                with torch.no_grad():
-                    if self.model_is_rating:
-                        val_acc_i, val_loss_i = self._train_rating(
-                            matches_val,
-                            y_val,
-                            match_pts_val,
-                            validation=True,
-                            **kwargs,
-                        )
-                    else:
-                        val_acc_i, val_loss_i = self._train_gnn(
-                            matches_val,
-                            y_val,
-                            match_pts_val,
-                            verbose,
-                            validation=True,
-                            **kwargs,
-                        )
-                val_acc += val_acc_i
-                val_loss += val_loss_i
-
-                if val_count_i != 0:
-                    validation_accuracy.append(val_acc_i / val_count_i)
-
-                # train the model on the data that validated it (only if epochs == 1)
-                if epochs == 1:
-                    if self.model_is_rating:
-                        trn_acc_ii, trn_loss_ii = self._train_rating(
-                            matches_val,
-                            y_val,
-                            match_pts_val,
-                        )
-                    else:
-                        trn_acc_ii, trn_loss_ii = self._train_gnn(
-                            matches_val,
-                            y_val,
-                            match_pts_val,
-                            verbose,
-                        )
-
-                    trn_acc += trn_acc_ii
-                    trn_loss += trn_loss_ii
-                    trn_acc_i += trn_acc_ii
-                    trn_loss_i += trn_loss_ii
-
-                    trn_count_i += val_count_i
-
-                training_accuracy.append(trn_acc_i / trn_count_i)
-
-                self.model.H = None
-
-            if verbose:
-                logger.info(
-                    f"[TRN] Epoch: {epoch + 1}, training loss: {trn_loss:.3f}, "
-                    f"training accuracy: {trn_acc / trn_count * 100:.2f}%"
-                )
-                if val_count != 0:
-                    logger.info(
-                        f"[VAL] Epoch: {epoch + 1}, validation loss: {val_loss:.3f}, "
-                        f"validation accuracy: {val_acc / val_count * 100:.2f}%"
-                    )
-
-            self.train_accuracy = trn_acc / trn_count
-            self.train_loss = trn_loss
-            if val_count != 0:
-                # store for later metric inspection
-                self.val_accuracy = val_acc / val_count
-                self.val_loss = val_loss
-
-            if callback is not None:
-                callback_kwarg_dict["epochs"] = epoch
-                callback_kwarg_dict["score"] = self.val_loss
-                callback_kwarg_dict["acc"] = self.val_accuracy
-                callback(**callback_kwarg_dict)
-
-        return [np.array(training_accuracy), np.array(validation_accuracy)]
-
-    def _create_edge_index_and_weight(
-        self,
-        match,
-        y,
-        validation: bool = False,
-        bidir: bool = True,
-        initial_weight: float = 0.1,
-    ) -> tuple[Tensor, Optional[Tensor]]:
-        assert len(y) in [
-            2,
-            3,
-        ], "Invalid outcome encoding - only one hot match outcome supported"
-
+    def _create_edge_index_and_weight(self, match, y, validation) -> tuple[Tensor, Optional[Tensor]]:
         outcome = torch.argmax(y).item()
         match = match.unsqueeze(1)
-        weight = None
-        """
-        _edge_weight_map = {
-            True: {  # length of one-hot encoded result == 2
-                0: {  # Home win == True
-                    True: torch.tensor(
-                        [+1, -1], dtype=torch.float
-                    ),  # bidirectional edges == True
-                    False: torch.tensor(
-                        [1.0], dtype=torch.float
-                    ),  # bidirectional edges == False
-                },
-                1: {  # Home win == False
-                    True: torch.tensor(
-                        [-1, +1], dtype=torch.float
-                    ),  # bidirectional edges == True
-                    False: torch.tensor(
-                        [1.0], dtype=torch.float
-                    ),  # bidirectional edges == False
-                },
-            },
-            False: {  # length of one-hot encoded result != 2
-                0: {  # Home win
-                    True: torch.tensor([+1, -1], dtype=torch.float),
-                    False: torch.tensor([+1, -1], dtype=torch.float),
-                },
-                1: {},  # draw
-                2: {},  # away win
-            },
-        }"""
 
         if len(y) == 2:
             # draws not used -> bidirectional edges possible
             if outcome == 0:
                 # away win
-                if bidir:
-                    index = torch.cat(
-                        (match, torch.flip(match, dims=[0])), dim=1
-                    )
+                if self._bidirectional_edges:
+                    index = torch.cat((match, torch.flip(match, dims=[0])), dim=1)
                     weight = torch.tensor([+1, -1], dtype=torch.float)
                 else:
                     index = match
                     weight = torch.tensor([1.0], dtype=torch.float)
             else:
                 # home win
-                if bidir:
-                    index = torch.cat(
-                        (match, torch.flip(match, dims=[0])), dim=1
-                    )
+                if self._bidirectional_edges:
+                    index = torch.cat((match, torch.flip(match, dims=[0])), dim=1)
                     weight = torch.tensor([-1, +1], dtype=torch.float)
                 else:
                     index = torch.flip(match, dims=[0])
@@ -397,177 +150,188 @@ class Trainer:
         if validation:
             weight = None
         else:
-            weight *= initial_weight
-            weight = weight.to(self.device)
+            weight *= 0.1
+            weight = weight.to(self._device)
 
-        index = index.to(self.device)
+        index = index.to(self._device)
         return index, weight
 
-    def _train_gnn(
-        self,
-        matches,
-        outcomes,
-        match_points,
-        verbose,
-        validation: bool = False,
-        clip_grad: bool = False,
-        bidir: bool = False,
-        gamma: float = 1.45,
-        predictions=None,
-    ) -> tuple[int, float]:
-        if validation:
-            self.model.eval()
-            self.model.store_index(False)
+    def _resolve_y(self, home_pts, away_pts, outcomes, m):
+        if self._model.rating_str == "berrar":
+            y = torch.cat((away_pts.unsqueeze(0), home_pts.unsqueeze(0)), dim=0).to(self._device, torch.float)
+            # rescale between 0 and 1
+            max_abs_value = torch.max(torch.abs(y))
+            y = y / max_abs_value
+        elif self._model.rating_str == "pi":
+            g_d_home = home_pts - away_pts
+            g_d_away = away_pts - home_pts
+            y = torch.cat((g_d_away.unsqueeze(0), g_d_home.unsqueeze(0)), dim=0).to(self._device, torch.float)
+            # rescale between 0 and 1
+            max_abs_value = torch.max(torch.abs(y))
+            y = y / max_abs_value
         else:
-            self.model.train()
-            self.model.store_index(True)
+            # elo, None
+            y = outcomes[m, :].to(torch.float)
 
-        ite = 0
+        return y
+
+    @no_grad_when_validating
+    def _train_validate_snapshot(self, matches, outcomes, match_points, validation=False, verbose=False):
+        if validation:
+            # validation part
+            self._model.eval()
+            self._model.store_index(False)
+        else:
+            # training part
+            self._model.train()
+            self._model.store_index(True)
+
         accuracy, loss_acc = 0, 0
         for m in range(matches.shape[1]):
-            self.optim.zero_grad()
+            self._optim.zero_grad()
 
             home, away = match = matches[:, m]
             home_pts, away_pts = match_points[m, :]
 
-            if self.model.rating_str == "berrar":
-                y = torch.cat(
-                    (away_pts.unsqueeze(0), home_pts.unsqueeze(0)), dim=0
-                ).to(self.device, torch.float)
-                # rescale between 0 and 1
-                max_abs_value = torch.max(torch.abs(y))
-                y = y / max_abs_value
-            elif self.model.rating_str == "pi":
-                g_d_home = home_pts - away_pts
-                g_d_away = away_pts - home_pts
-                y = torch.cat(
-                    (g_d_away.unsqueeze(0), g_d_home.unsqueeze(0)), dim=0
-                ).to(self.device, torch.float)
-                # rescale between 0 and 1
-                max_abs_value = torch.max(torch.abs(y))
-                y = y / max_abs_value
-            else:
-                # elo, None
-                ...
-            y = outcomes[m, :].to(torch.float)
+            outcome_y = outcomes[m, :].to(torch.float)
+            edge_index, edge_weight = self._create_edge_index_and_weight(match, outcome_y, validation)
+            y = self._resolve_y(home_pts, away_pts, outcome_y, m)
 
-            edge_index, edge_weight = self._create_edge_index_and_weight(
-                match, y, validation, bidir=bidir
-            )
-
-            point_diff = torch.abs(home_pts - away_pts)
-
-            y_hat = self.model(
-                edge_index, home, away, edge_weight, home_pts, away_pts
-            )
+            # forward pass
+            y_hat = self._model(edge_index, home, away, edge_weight, home_pts, away_pts)
 
             target = torch.argmax(outcomes[m, :])
             prediction = torch.argmax(y_hat)
-            if predictions is not None:
-                predictions.append(float(y_hat[1]))
 
-            accuracy += 1 if abs(target - prediction) < 0.1 else 0
+            accuracy += int(prediction == target)
 
-            loss = self._loss_fn(y, y_hat, (point_diff + 1) ** gamma)
+            loss = self._loss(y_hat, y)
             loss.retains_grad_ = True
             loss_acc += loss.item()
+
+            self._log(f"[{'VAL' if validation else 'TRN'}] Match {m}:"
+                      f" correct: {'YES' if (prediction == target) else 'NO'} loss: {loss:.4f}",
+                      level='debug')
 
             if validation:
                 continue
 
+            # Backward pass (only during training)
             loss.backward()
-            if verbose and False:
-                print("Iteration ------------------------------------ ", ite)
-                # print(f"Loss gradient: {loss.grad:.4f}")
-                for name, param in self.model.named_parameters():
-                    print(f"Gradient of {name}: {param.grad}")
-                print("\n")
-            ite += 1
 
-            if clip_grad:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.hyperparams, max_norm=1
-                )
-            self.optim.step()
+            self._optim.step()
 
         return accuracy, loss_acc
 
-    def _train_rating(
-        self,
-        matches,
-        outcomes,
-        match_points,
-        validation: bool = False,
-        clip_grad: bool = False,
-        **kwargs,
-    ) -> tuple[int, float]:
-        if self.model.type == "elo":
-            return self._train_elo(
-                matches,
-                outcomes,
-                match_points,
-                validation,
-                clip_grad,
-                **kwargs,
-            )
-        elif self.model.type == "berrar":
-            return self._train_berrar(
-                matches,
-                outcomes,
-                match_points,
-                validation,
-                clip_grad,
-                **kwargs,
-            )
-        elif self.model.type == "pi":
-            ...
-        else:
-            raise RuntimeError("Unknown rating model type")
+    def train(self, epochs: int, train_val_ratio: float = 0.9, verbose: bool = False,
+              eval_callback: Optional[Callable] = None, train_on_validation: bool = False,
+              early_stopping: bool = True, early_stopping_delta: float = 1e-3):
+        self._verbose = verbose
 
-    def test(self, verbose: bool = False) -> float:
-        self.model.eval()
-        correct, count = 0, 0
+        snapshot_trn_acc = []
+        snapshot_val_acc = []
+        snapshot_trn_loss = []
+        snapshot_val_loss = []
 
-        test_fun = (
-            self._test_rating if self.model_is_rating else self._test_gnn
-        )
+        for epoch in range(epochs):
+            trn_acc, trn_loss, trn_count = 0, 0, 0
+            val_acc, val_loss, val_count = 0, 0, 0
+            self._model.reset_index()
 
-        with torch.no_grad():
-            for time, snapshot in enumerate(self._test_dataset):
-                correct, count = test_fun(snapshot)
-        if count == 0:
-            logger.warning("Trying to test when testing dataset is empty")
-            test_accuracy = 0
-        else:
-            test_accuracy = correct / count
-            logger.info(f"[TST] Testing accuracy: {100. * test_accuracy:.2f}%")
+            snapshot_trn_acc_i = []
+            snapshot_val_acc_i = []
+            snapshot_trn_loss_i = []
+            snapshot_val_loss_i = []
 
-        return test_accuracy
+            last_model = copy.deepcopy(self._model.state_dict())
 
-    def _test_gnn(self, snapshot):
-        y_hat = self.model(snapshot.edge_index)
-        y = snapshot.edge_attr
-        target = torch.argmax(y, dim=1)
-        prediction = torch.argmax(y_hat, dim=1)
-        correct = int((prediction.eq(target)).sum().item())
-        count = len(prediction)
-        return correct, count
+            for time, snapshot in enumerate(self._train_val_dataset):
+                matches = snapshot.edge_index.to(self._device)
+                outcomes = snapshot.edge_attr.to(self._device)  # edge weight encodes the match outcome
+                match_points = snapshot.match_points.to(self._device)
 
-    def _test_rating(self, snapshot):
-        y_hat = torch.mean(self.model(snapshot.edge_index), dim=1)
-        y = snapshot.edge_attr
-        target = torch.argmax(y, dim=1) / 2.0
-        correct = torch.sum(torch.abs(target - y_hat) < 0.5).item()
-        count = len(y_hat)
-        return correct, count
+                # split train / val data ----------------------------------------------------------
+                matches_count = matches.shape[1]
+                trn_size = np.ceil(matches_count * train_val_ratio).astype(int)
+
+                matches_train = matches[:, :trn_size]
+                y_train = outcomes[:trn_size, :]
+                match_pts_trn = match_points[:trn_size, :]
+                trn_count_i = matches_train.shape[1]
+                trn_count += trn_count_i
+
+                matches_val = matches[:, trn_size:]
+                y_val = outcomes[trn_size:, :]
+                match_pts_val = match_points[trn_size:, :]
+                val_count_i = matches_val.shape[1]
+                val_count += val_count_i
+                # ----------------------------------------------------------------------------------
+
+                # train
+                trn_acc_i, trn_loss_i = self._train_validate_snapshot(matches_train, y_train, match_pts_trn,
+                                                                      validation=False, verbose=verbose)
+                trn_acc += trn_acc_i
+                trn_loss += trn_loss_i
+
+                # validate
+                val_acc_i, val_loss_i = self._train_validate_snapshot(matches_val, y_val, match_pts_val,
+                                                                      validation=True, verbose=verbose)
+                val_acc += val_acc_i
+                val_loss += val_loss_i
+
+                # train on the validation subset afterward if needed
+                if train_on_validation:
+                    trn_acc_val_i, trn_loss_val_i = self._train_validate_snapshot(matches_val, y_val, match_pts_val,
+                                                                          validation=False, verbose=verbose)
+                    trn_acc += trn_acc_val_i
+                    trn_loss += trn_loss_val_i
+                    trn_count_i += val_count_i
+                # ---------------------------------------------------
+
+                # collect snapshot results
+                snapshot_trn_acc_i.append(trn_acc_i / trn_count_i)
+                snapshot_val_acc_i.append(val_acc_i / val_count_i)
+                snapshot_trn_loss_i.append(trn_loss_i)
+                snapshot_val_loss_i.append(val_loss_i)
+
+            # SNAPSHOT LOOP END -----------------------------------------------------
+
+            # collect results from whole epoch
+            snapshot_trn_acc.append(snapshot_trn_acc_i)
+            snapshot_val_acc.append(snapshot_val_acc_i)
+            snapshot_trn_loss.append(snapshot_trn_loss_i)
+            snapshot_val_loss.append(snapshot_val_loss_i)
+
+            train_count_all = trn_count if not train_on_validation else trn_count + val_count
+
+            self._train_acc.append(trn_acc / train_count_all)
+            self._train_loss.append(trn_loss)
+            self._val_acc.append(val_acc / max(val_count, 1))
+            self._val_loss.append(val_loss)
+
+            # early stopping
+            if early_stopping and (len(self._val_loss) > 1) and (self._val_loss[-1] - self._val_loss[-2] > early_stopping_delta):
+                self._model.load_state_dict(last_model)
+                break
+
 
     def get_eval_metric(self, metric: str = "val_acc"):
-        assert metric in [
-            "val_accuracy",
-            "test_accuracy",
+        """
+        possible eval metrics:
+            "val_acc",
+            "test_acc",
             "val_loss",
             "test_loss",
             "train_loss",
-            "train_accuracy",
+            "train_acc",
+        cached from all train and test runs
+        """
+        assert metric in [
+            "val_acc",
+            "test_acc",
+            "val_loss",
+            "test_loss",
+            "train_loss",
+            "train_acc",
         ]
-        return getattr(self, metric)
+        return getattr(self, "_" + metric)
