@@ -25,8 +25,8 @@ RUN pip install --upgrade pip \
 # Copy the rest of the application code
 COPY . .
 
-CMD ["python", "nera/evaluation.py"]
+CMD ["python", "src/evaluation.py"]
 
-EXPOSE 3000
+EXPOSE 9999
 
 

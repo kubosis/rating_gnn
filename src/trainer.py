@@ -1,5 +1,5 @@
 import copy
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 
 import torch
 import torch.nn as nn
@@ -12,18 +12,19 @@ from loguru import logger
 
 from .gnn import RecurrentGNN
 
-def no_grad_when_validating(fcn):
+def no_grad_context_when_validating(fcn):
     """
-    If keyword 'validation' present and set to True we call the decorated function fcn with torch.no_grad() context
+    Decorator function
+    If keyword 'validation' present and set to 'True' we call the decorated function fcn with torch.no_grad() context
     """
-    def cond_no_grad(*args, **kwargs):
+    def conditional_no_grad(*args, **kwargs):
         if kwargs.get("validation", False):
             with torch.no_grad():
                 fcn(*args, **kwargs)
         else:
             fcn(*args, **kwargs)
 
-    return cond_no_grad
+    return conditional_no_grad
 
 class Trainer:
     def __init__(
@@ -69,6 +70,8 @@ class Trainer:
         self._test_acc: float = 0.
         self._test_loss: float = 0.
 
+        self._final_epoch: int = 0 # save the final epoch - because of early stopping mechanic
+
         # use CUDA if available
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._device = device
@@ -99,6 +102,14 @@ class Trainer:
     @property
     def test_loss(self) -> float:
         return self._test_loss
+
+    @property
+    def final_epoch(self) -> int:
+        return self._final_epoch
+
+    @property
+    def model(self) -> nn.Module:
+        return self._model
 
     def _log(self, fstring: str, level: str = 'info', *args, **kwargs):
         if not self._verbose:
@@ -175,7 +186,7 @@ class Trainer:
 
         return y
 
-    @no_grad_when_validating
+    @no_grad_context_when_validating
     def _train_validate_snapshot(self, matches, outcomes, match_points, validation=False, verbose=False):
         if validation:
             # validation part
@@ -224,8 +235,27 @@ class Trainer:
         return accuracy, loss_acc
 
     def train(self, epochs: int, train_val_ratio: float = 0.9, verbose: bool = False,
-              eval_callback: Optional[Callable] = None, train_on_validation: bool = False,
-              early_stopping: bool = True, early_stopping_delta: float = 1e-3):
+              train_on_validation: bool = False, early_stopping: bool = True, early_stopping_delta: float = 1e-3,
+              post_epoch_hooks: Optional[list[Callable]] = None,
+              pre_epoch_hooks: Optional[list[Callable]] = None,):
+        """
+        :param epochs: int - number of epochs to train
+        :param train_val_ratio: float - ratio of training data to validation data
+        :param verbose: bool
+        :param train_on_validation: bool - is training on validation data
+        :param early_stopping: bool
+        :param early_stopping_delta: float
+        :param post_epoch_hooks: list[Callable], argument = this Trainer object
+        :param pre_epoch_hooks: list[Callable], argument = this Trainer object
+
+        :return: snapshot_trn_acc, snapshot_val_acc, snapshot_trn_loss, snapshot_val_loss
+        """
+
+        if not post_epoch_hooks:
+            post_epoch_hooks = []
+        if not pre_epoch_hooks:
+            pre_epoch_hooks = []
+
         self._verbose = verbose
 
         snapshot_trn_acc = []
@@ -234,6 +264,9 @@ class Trainer:
         snapshot_val_loss = []
 
         for epoch in range(epochs):
+            for hook in pre_epoch_hooks:
+                hook(self)
+
             trn_acc, trn_loss, trn_count = 0, 0, 0
             val_acc, val_loss, val_count = 0, 0, 0
             self._model.reset_index()
@@ -297,10 +330,10 @@ class Trainer:
             # SNAPSHOT LOOP END -----------------------------------------------------
 
             # collect results from whole epoch
-            snapshot_trn_acc.append(snapshot_trn_acc_i)
-            snapshot_val_acc.append(snapshot_val_acc_i)
-            snapshot_trn_loss.append(snapshot_trn_loss_i)
-            snapshot_val_loss.append(snapshot_val_loss_i)
+            snapshot_trn_acc.extend(snapshot_trn_acc_i)
+            snapshot_val_acc.extend(snapshot_val_acc_i)
+            snapshot_trn_loss.extend(snapshot_trn_loss_i)
+            snapshot_val_loss.extend(snapshot_val_loss_i)
 
             train_count_all = trn_count if not train_on_validation else trn_count + val_count
 
@@ -309,29 +342,40 @@ class Trainer:
             self._val_acc.append(val_acc / max(val_count, 1))
             self._val_loss.append(val_loss)
 
+            for hook in post_epoch_hooks:
+                hook(self)
+
             # early stopping
             if early_stopping and (len(self._val_loss) > 1) and (self._val_loss[-1] - self._val_loss[-2] > early_stopping_delta):
                 self._model.load_state_dict(last_model)
+                self._final_epoch = epoch
                 break
 
+        return snapshot_trn_acc, snapshot_val_acc, snapshot_trn_loss, snapshot_val_loss
 
-    def get_eval_metric(self, metric: str = "val_acc"):
-        """
-        possible eval metrics:
-            "val_acc",
-            "test_acc",
-            "val_loss",
-            "test_loss",
-            "train_loss",
-            "train_acc",
-        cached from all train and test runs
-        """
-        assert metric in [
-            "val_acc",
-            "test_acc",
-            "val_loss",
-            "test_loss",
-            "train_loss",
-            "train_acc",
-        ]
-        return getattr(self, "_" + metric)
+    def test(self, verbose: bool = False):
+        self._model.eval()
+        self._test_loss = 0.
+        correct, count = 0, 0
+        with torch.no_grad():
+            for time, snapshot in enumerate(self._test_dataset):
+                correct, count = self._test_gnn(snapshot)
+        if count == 0:
+            logger.warning("Trying to test when testing dataset is empty")
+            self._test_acc = 0.
+        else:
+            test_accuracy = correct / count
+            logger.info(f"[TST] Testing accuracy: {100. * test_accuracy:.2f}%")
+            self._test_acc = test_accuracy
+        return
+
+    def _test_gnn(self, snapshot):
+        y_hat = self._model(snapshot.edge_index)
+        y = snapshot.edge_attr
+        target = torch.argmax(y, dim=1)
+        prediction = torch.argmax(y_hat, dim=1)
+        correct = int((prediction.eq(target)).sum().item())
+        self._test_loss += self._loss(y, y_hat)
+        count = len(prediction)
+        return correct, count
+

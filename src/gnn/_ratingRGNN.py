@@ -8,7 +8,7 @@ from torch_geometric.nn import GraphConv, SAGEConv, GCNConv, ChebConv
 
 from ._GConvElman import GConvElman
 from ._reccurent_gnn import RecurrentGNN
-from torch_rating import Elo, Berrar, Pi
+from torch_rating import EloLayer, BerrarLayer, PiLayer
 
 
 class RatingRGNN(RecurrentGNN):
@@ -26,9 +26,9 @@ class RatingRGNN(RecurrentGNN):
     }
 
     _rating = {
-        "elo": Elo,
-        "berrar": Berrar,
-        "pi": Pi,
+        "elo": EloLayer,
+        "berrar": BerrarLayer,
+        "pi": PiLayer,
     }
 
     def __init__(
@@ -41,8 +41,8 @@ class RatingRGNN(RecurrentGNN):
         activation: str = "relu",
         K: int = 2,
         rgnn_conv: str = "GCONV_GRU",
-        graph_conv: str = "GCNConv",
-        rating: str = None,
+        graph_conv: Optional[str] = "GCNConv",
+        rating: Optional[str] = None,
         normalization: Optional[str] = "sym",
         aggr: str = "add",
         dense_layers: int = 1,
@@ -53,7 +53,9 @@ class RatingRGNN(RecurrentGNN):
     ):
 
         assert rgnn_conv.upper() in ["GCONV_GRU", "GCONV_ELMAN"]
-        assert graph_conv in ["GraphConv", "GCNConv", "ChebConv"]
+        assert graph_conv in ["GraphConv", "GCNConv", "ChebConv", None]
+        if rgnn_conv.upper() == "GCONV_ELMAN":
+            assert graph_conv is not None
         assert rating in ["elo", "berrar", "pi", None]
 
         assert (
