@@ -16,20 +16,26 @@ class DataTransformation:
         :param snapshot_duration: time duration of each graph snapshot
         """
         needed_columns = [
-            "League",
+            "league",
             "DT",
             "Home",
             "Away",
             "Winner",
             "Home_points",
             "Away_points",
-            "Season",
+            "season",
         ]
         if "league_years" in df.columns:
-            df.rename(columns={"league_years": "Season"}, inplace=True)
+            df.rename(columns={"league_years": "season"}, inplace=True)
         self.df: pd.DataFrame = df.loc[
             :, df.columns.intersection(needed_columns)
         ]
+
+        if "Winner" not in self.df.columns:
+            self.df["Winner"] = "home"
+            self.df.loc[self.df["Home_points"] < self.df["Away_points"], "Winner"] = "away"
+            self.df.loc[self.df["Home_points"] == self.df["Away_points"], "Winner"] = "draw"
+
         self.team_mapping: dict = {}
         self.inv_team_mapping: dict = {}
         self.wld_mapping: dict = {}
@@ -40,7 +46,7 @@ class DataTransformation:
         self.start_date = min(self.df["DT"])
         self.end_date = max(self.df["DT"]) + timedelta(days=1)
 
-        self.snapshots = list(np.sort(self.df["Season"].unique()))
+        self.snapshots = list(np.sort(self.df["season"].unique()))
 
     def _create_teams_mapping(self) -> None:
         teams = np.sort(
@@ -93,7 +99,7 @@ class DataTransformation:
         i = 0
         last_df_i = None
         for season in self.snapshots:
-            df_i = self.df[self.df["Season"] == season]
+            df_i = self.df[self.df["season"] == season]
             if last_df_i is not None:
                 # filter out those matches already present in last snapshot
                 df_i = df_i.drop(last_df_i.index, errors="ignore")
@@ -194,12 +200,12 @@ class DataTransformation:
         labels = []
         match_points = []
 
-        leagues = self.df["League"].unique()
+        leagues = self.df["league"].unique()
 
         one_hot_dim = 3 if use_draws else 2
         last_df_i = None
         for season in self.snapshots:
-            df_i = self.df[self.df["Season"] == season]
+            df_i = self.df[self.df["season"] == season]
             if last_df_i is not None:
                 # filter out those matches already present in last snapshot
                 df_i = df_i.drop(last_df_i.index, errors="ignore")
@@ -229,12 +235,12 @@ class DataTransformation:
             team_ranks = np.zeros((self.num_teams,))
             away_team_wins = (
                 df_i.loc[df_i["Winner"] == 2]
-                .groupby(["League", "Away"])
+                .groupby(["league", "Away"])
                 .count()
             )
             home_team_wins = (
                 df_i.loc[df_i["Winner"] == 0]
-                .groupby(["League", "Home"])
+                .groupby(["league", "Home"])
                 .count()
             )
             team_points[
@@ -244,7 +250,7 @@ class DataTransformation:
                 home_team_wins.index.get_level_values(1).to_numpy()
             ] += home_team_wins["Winner"].values
             for league in leagues:
-                league_df = self.df.loc[self.df["League"] == league]
+                league_df = self.df.loc[self.df["league"] == league]
                 teams_ids = pd.concat(
                     [league_df["Home"], league_df["Away"]], axis=0
                 ).unique()

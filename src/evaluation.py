@@ -20,6 +20,8 @@ from trainer import Trainer
 from gnn import RatingRGNN
 from data import DataTransformation
 
+from loguru import logger
+
 # basic parser definition ----------------------------------------------------------
 parser = argparse.ArgumentParser()
 
@@ -29,12 +31,12 @@ RATINGS = ["elo", "berrar", "pi", "no_rating"]
 leagues_with_draws = ["premier_league"]
 
 parser.add_argument("-d", "--dataset", type=str, choices=DATASETS, default="extraliga",
-                    help=f"Dataset to evaluate (choices: {', '.join(DATASETS)})")
+                    help=f"Dataset to evaluate (choices: {', '.join(DATASETS)})", required=True)
 
 parser.add_argument("-n", "--ntrials", type=int, default=10,
-                    help="Number of optuna trials")
+                    help="Number of optuna trials", required=False)
 
-parser.add_argument("-v", "--verbose", action="store_true", default=False,)
+parser.add_argument("-v", "--verbosity_level", default=0, type=int,)
 # -----------------------------------------------------------------------------------
 
 def _rating_rgnn_to_device(model, device):
@@ -43,6 +45,11 @@ def _rating_rgnn_to_device(model, device):
         elem.to(device)
     for elem in model.linear_layers:
         elem.to(device)
+
+def _print(string: str, verbosity_level: int):
+    if verbosity_level == 0:
+        return
+    print(string)
 
 class Evaluator:
     # fixed hyperparams:
@@ -60,7 +67,7 @@ class Evaluator:
             mlflow.log_metric(name, value, step=i)
 
     @staticmethod
-    def objective(trial: optuna.Trial, dataset, team_count, run_name, bidirectional_graph, target_dimension, verbose):
+    def objective(trial: optuna.Trial, dataset, team_count, run_name, bidirectional_graph, target_dimension, verbosity_level):
         # rgnn fixed to be GCONV_GRU
         # rating and dataset comes from CLI args -> forms run name
 
@@ -77,13 +84,14 @@ class Evaluator:
         dense_layers = trial.suggest_int("dense_layers", 0, 3)
         conv_layers = trial.suggest_int("conv_layers", 1, 5)
 
+        _print(f"[INFO] starting to train test validate on {run_name} run", verbosity_level)
         (snapshot_trn_acc, snapshot_val_acc, snapshot_trn_loss, snapshot_val_loss,
          train_loss, val_loss, test_loss, train_acc, val_acc, test_acc, model, final_epoch) = (
             Evaluator.train_test_validate(dataset, team_count, lr_hyper, lr_rating, Evaluator.epochs,
                                           embed_dim, discount, correction, Evaluator.activation, K,
                                           Evaluator.rgnn, None, rating, dense_layers, conv_layers,
                                           Evaluator.dropout_rate, bidirectional_graph, target_dimension,
-                                          Evaluator.normalization, Evaluator.train_test_ratio, verbose,))
+                                          Evaluator.normalization, Evaluator.train_test_ratio, verbosity_level,))
 
         # 2) LOG EVERYTHING to the MLFlow server
         # 2.a) save the artifacts (arrays), model
@@ -187,7 +195,7 @@ class Evaluator:
             target_dimension: int,
             normalization,
             train_val_ratio: float,
-            verbose: bool,
+            verbosity_level: int,
             **rating_kwargs,
     ) -> tuple[list[float], list[float], list[float], list[float],
                 list[float], list[float], float, list[float], list[float], float,
@@ -222,13 +230,13 @@ class Evaluator:
         snapshot_trn_acc, snapshot_val_acc, snapshot_trn_loss, snapshot_val_loss = trainer.train(
             epochs,
             train_val_ratio=train_val_ratio,
-            verbose=verbose,
+            verbosity_level=verbosity_level,
             train_on_validation=True,
             early_stopping=True,
         )
 
         # 3) test the model and return metrics for evaluation --------------------------------------------
-        trainer.test(verbose=verbose)
+        trainer.test(verbosity_level=verbosity_level)
 
         # MAIN OPTIMIZATION METRIC IS << test_loss >>
         return (snapshot_trn_acc, snapshot_val_acc, snapshot_trn_loss, snapshot_val_loss,
@@ -238,7 +246,7 @@ class Evaluator:
 
     @staticmethod
     def evaluate(raw_dataset: pd.DataFrame, n_trials: int, run_name: str, experiment_name: str, bidirectional: bool,
-                 target_dimension: int, drop_draws: bool, verbose: bool=False):
+                 target_dimension: int, drop_draws: bool, verbosity_level: int=0):
         transform = DataTransformation(raw_dataset, snapshot_duration=timedelta(days=365))
         dataset = transform.get_dataset(node_f_extract=False, edge_f_one_hot=True, drop_draws=drop_draws)
 
@@ -247,9 +255,12 @@ class Evaluator:
         with mlflow.start_run(run_name=run_name):
             # Set up an Optuna study
             study = optuna.create_study(direction="minimize")
+
+            _print("[INFO] study started", verbosity_level=verbosity_level)
+
             study.optimize(
                 lambda trial: Evaluator.objective(
-                    trial, dataset, transform.num_teams, run_name, bidirectional, target_dimension, verbose
+                    trial, dataset, transform.num_teams, run_name, bidirectional, target_dimension, verbosity_level
                 ),
                 n_trials=n_trials,
             )
@@ -261,6 +272,14 @@ class Evaluator:
 
 if __name__ == '__main__':
     args = parser.parse_args()
+
+    from utils import logger, setup_logger
+    setup_logger(f"logs/{args.dataset}.log", int(args.verbosity_level))
+
+    print("RatingRGNN EVALUATOR v1.0.0")
+    print(f"Running with these arguments: {vars(args)}")
+
+    _print("starting evaluation", args.verbosity_level)
 
     # Load dataset
     root_data_path = pl.Path(__file__).resolve().parent.parent / 'resources'
@@ -276,4 +295,6 @@ if __name__ == '__main__':
 
 
     Evaluator.evaluate(raw_data, args.ntrials, run_name, experiment_name, bidirectional,
-                       target_dimension, drop_draws, args.verbose)
+                       target_dimension, drop_draws, int(args.verbosity_level))
+
+

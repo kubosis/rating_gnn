@@ -8,9 +8,9 @@ from torch.nn import CrossEntropyLoss
 from torch_geometric_temporal.signal import temporal_signal_split, DynamicGraphTemporalSignal
 
 import numpy as np
-from loguru import logger
 
-from .gnn import RecurrentGNN
+from gnn import RecurrentGNN
+from utils import logger
 
 def no_grad_context_when_validating(fcn):
     """
@@ -20,9 +20,9 @@ def no_grad_context_when_validating(fcn):
     def conditional_no_grad(*args, **kwargs):
         if kwargs.get("validation", False):
             with torch.no_grad():
-                fcn(*args, **kwargs)
+                return fcn(*args, **kwargs)
         else:
-            fcn(*args, **kwargs)
+            return fcn(*args, **kwargs)
 
     return conditional_no_grad
 
@@ -112,14 +112,18 @@ class Trainer:
         return self._model
 
     def _log(self, fstring: str, level: str = 'info', *args, **kwargs):
-        if not self._verbose:
+        if self._verbose == 0:
             return
         if level == 'info':
             logger.info(fstring, *args, **kwargs)
-        elif level == 'debug':
+        elif level == 'debug' and self._verbose > 1:
             logger.debug(fstring, *args, **kwargs)
         elif level == 'error':
             logger.error(fstring, *args, **kwargs)
+        elif level == 'warning':
+            logger.warning(fstring, *args, **kwargs)
+        elif level == 'success':
+            logger.success(fstring, *args, **kwargs)
 
     def _create_edge_index_and_weight(self, match, y, validation) -> tuple[Tensor, Optional[Tensor]]:
         outcome = torch.argmax(y).item()
@@ -167,7 +171,7 @@ class Trainer:
         index = index.to(self._device)
         return index, weight
 
-    def _resolve_y(self, home_pts, away_pts, outcomes, m):
+    def _resolve_y(self, home_pts, away_pts, outcome_y, m):
         if self._model.rating_str == "berrar":
             y = torch.cat((away_pts.unsqueeze(0), home_pts.unsqueeze(0)), dim=0).to(self._device, torch.float)
             # rescale between 0 and 1
@@ -182,12 +186,12 @@ class Trainer:
             y = y / max_abs_value
         else:
             # elo, None
-            y = outcomes[m, :].to(torch.float)
+            y = outcome_y
 
         return y
 
     @no_grad_context_when_validating
-    def _train_validate_snapshot(self, matches, outcomes, match_points, validation=False, verbose=False):
+    def _train_validate_snapshot(self, matches, outcomes, match_points, match_i, validation=False):
         if validation:
             # validation part
             self._model.eval()
@@ -220,7 +224,7 @@ class Trainer:
             loss.retains_grad_ = True
             loss_acc += loss.item()
 
-            self._log(f"[{'VAL' if validation else 'TRN'}] Match {m}:"
+            self._log(f"[{'VAL' if validation else 'TRN'}] Match {match_i + m}:"
                       f" correct: {'YES' if (prediction == target) else 'NO'} loss: {loss:.4f}",
                       level='debug')
 
@@ -234,14 +238,14 @@ class Trainer:
 
         return accuracy, loss_acc
 
-    def train(self, epochs: int, train_val_ratio: float = 0.9, verbose: bool = False,
+    def train(self, epochs: int, train_val_ratio: float = 0.9, verbosity_level: int = 0,
               train_on_validation: bool = False, early_stopping: bool = True, early_stopping_delta: float = 1e-3,
               post_epoch_hooks: Optional[list[Callable]] = None,
               pre_epoch_hooks: Optional[list[Callable]] = None,):
         """
         :param epochs: int - number of epochs to train
         :param train_val_ratio: float - ratio of training data to validation data
-        :param verbose: bool
+        :param verbosity_level: int 0 - no logs, 1 - no debug alogs, 2 - all logs
         :param train_on_validation: bool - is training on validation data
         :param early_stopping: bool
         :param early_stopping_delta: float
@@ -256,7 +260,7 @@ class Trainer:
         if not pre_epoch_hooks:
             pre_epoch_hooks = []
 
-        self._verbose = verbose
+        self._verbose = verbosity_level
 
         snapshot_trn_acc = []
         snapshot_val_acc = []
@@ -277,6 +281,7 @@ class Trainer:
             snapshot_val_loss_i = []
 
             last_model = copy.deepcopy(self._model.state_dict())
+            processed_matches = 0
 
             for time, snapshot in enumerate(self._train_val_dataset):
                 matches = snapshot.edge_index.to(self._device)
@@ -302,24 +307,31 @@ class Trainer:
 
                 # train
                 trn_acc_i, trn_loss_i = self._train_validate_snapshot(matches_train, y_train, match_pts_trn,
-                                                                      validation=False, verbose=verbose)
+                                                                      processed_matches,
+                                                                      validation=False,)
                 trn_acc += trn_acc_i
                 trn_loss += trn_loss_i
 
                 # validate
                 val_acc_i, val_loss_i = self._train_validate_snapshot(matches_val, y_val, match_pts_val,
-                                                                      validation=True, verbose=verbose)
+                                                                      processed_matches + trn_size,
+                                                                      validation=True,)
                 val_acc += val_acc_i
                 val_loss += val_loss_i
 
                 # train on the validation subset afterward if needed
                 if train_on_validation:
                     trn_acc_val_i, trn_loss_val_i = self._train_validate_snapshot(matches_val, y_val, match_pts_val,
-                                                                          validation=False, verbose=verbose)
+                                                                                  processed_matches + trn_size,
+                                                                                  validation=False,)
                     trn_acc += trn_acc_val_i
                     trn_loss += trn_loss_val_i
                     trn_count_i += val_count_i
                 # ---------------------------------------------------
+                processed_matches += matches_count
+                self._log(f"Epoch {epoch} Snapshot {time} processed [{matches_count} matches] with \n"
+                          f"train loss {trn_loss_i}, train acc {trn_acc_i / trn_count_i:.2f}%,"
+                          f"validation loss {val_loss_i}, validation acc {val_acc_i / val_count_i:.2f}%", level='info')
 
                 # collect snapshot results
                 snapshot_trn_acc_i.append(trn_acc_i / trn_count_i)
@@ -337,13 +349,21 @@ class Trainer:
 
             train_count_all = trn_count if not train_on_validation else trn_count + val_count
 
-            self._train_acc.append(trn_acc / train_count_all)
+            train_accuracy = trn_acc / train_count_all
+            validation_accuracy = val_acc / max(val_count, 1)
+
+            self._train_acc.append(train_accuracy)
             self._train_loss.append(trn_loss)
-            self._val_acc.append(val_acc / max(val_count, 1))
+            self._val_acc.append(validation_accuracy)
             self._val_loss.append(val_loss)
 
             for hook in post_epoch_hooks:
                 hook(self)
+
+            self._log(f"Epoch {epoch:3} has ended \n"
+                      f"trn acc = {train_accuracy:2.f}%, trn loss = {trn_loss:2.f}, \n"
+                      f"val acc = {validation_accuracy:2.f}%, val loss = {val_loss:2.f}",
+                      level='info')
 
             # early stopping
             if early_stopping and (len(self._val_loss) > 1) and (self._val_loss[-1] - self._val_loss[-2] > early_stopping_delta):
@@ -353,19 +373,20 @@ class Trainer:
 
         return snapshot_trn_acc, snapshot_val_acc, snapshot_trn_loss, snapshot_val_loss
 
-    def test(self, verbose: bool = False):
+    def test(self, verbosity_level: int = 0):
         self._model.eval()
+        self._verbose = verbosity_level
         self._test_loss = 0.
         correct, count = 0, 0
         with torch.no_grad():
             for time, snapshot in enumerate(self._test_dataset):
                 correct, count = self._test_gnn(snapshot)
         if count == 0:
-            logger.warning("Trying to test when testing dataset is empty")
+            self._log("Trying to test when testing dataset is empty", "warning")
             self._test_acc = 0.
         else:
             test_accuracy = correct / count
-            logger.info(f"[TST] Testing accuracy: {100. * test_accuracy:.2f}%")
+            self._log(f"[TST] Testing accuracy: {100. * test_accuracy:.2f}%", "success")
             self._test_acc = test_accuracy
         return
 
