@@ -1,0 +1,50 @@
+version: "3.9"
+
+x-base-service: &base-service
+  restart: unless-stopped
+  volumes:
+    - ./:/nera
+  build: .
+
+services:
+  extraliga:
+    <<: *base-service
+    command: ["src/evaluation.py", "--dataset", "extraliga", "--ntrials", "500", "--v", "2"]
+    ports:
+      - "20001:9999"
+
+  nba:
+    <<: *base-service
+    command: ["src/evaluation.py", "--dataset", "nba", "--ntrials", "500", "--v", "2"]
+    ports:
+      - "20002:9999"
+
+  nfl:
+    <<: *base-service
+    command: ["src/evaluation.py", "--dataset", "nfl", "--ntrials", "500", "--v", "2"]
+    ports:
+      - "20003:9999"
+
+  plusliga:
+    <<: *base-service
+    command: [ "src/evaluation.py", "--dataset", "plusliga", "--ntrials", "500", "--v", "2" ]
+    ports:
+      - "20004:9999"
+
+  premier_league:
+    <<: *base-service
+    command: [ "src/evaluation.py", "--dataset", "premier_league", "--ntrials", "500", "--v", "2" ]
+    ports:
+      - "20005:9999"
+
+  svenska_superligan:
+    <<: *base-service
+    command: [ "src/evaluation.py", "--dataset", "svenska_superligan", "--ntrials", "500", "--v", "2" ]
+    ports:
+      - "20006:9999"
+
+  wimbledon:
+    <<: *base-service
+    command: [ "src/evaluation.py", "--dataset", "wimbledon", "--ntrials", "500", "--v", "2" ]
+    ports:
+      - "20007:9999"
